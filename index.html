@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>現在地撮影ナビ</title>
+<style>
+  body { font-family: sans-serif; background:#111; color:#eee; text-align:center; padding:16px; }
+  video, canvas { max-width:100%; border-radius:8px; }
+  #speed { font-size:64px; font-weight:bold; color:#0f8; margin:8px 0; }
+  .box { background:#222; border-radius:8px; padding:12px; margin:10px auto; max-width:480px; text-align:left; }
+  button { padding:12px 24px; font-size:18px; border:none; border-radius:6px; background:#0a84ff; color:#fff; cursor:pointer; margin:4px; }
+  #clock { font-size:22px; color:#ffd60a; }
+  img { max-width:100%; border-radius:8px; margin-top:8px; }
+</style>
+</head>
+<body>
+
+<h2>⏱ 現在時刻</h2>
+<div id="clock" class="box">--:--:--</div>
+
+<h2>🚗 速度計</h2>
+<div id="speed" class="box">0.0<span style="font-size:20px"> km/h</span></div>
+<div class="box" id="gpsStatus">GPS: 取得中…</div>
+
+<h2>📷 写真撮影と現在地</h2>
+<button id="startCam">カメラ起動</button>
+<button id="shot" disabled>撮影</button>
+<div><video id="video" autoplay playsinline style="display:none"></video></div>
+<div class="box" id="location">位置情報を取得中…</div>
+<div class="box" id="photoInfo" style="display:none">
+  <b>撮影情報</b><br>
+  <span id="shotTime"></span><br>
+  <span id="shotAddr"></span>
+  <img id="photo" alt="撮影写真">
+</div>
+
+<script>
+// ---- 時計 ----
+setInterval(() => {
+  document.getElementById('clock').textContent =
+    new Date().toLocaleString('ja-JP', {hour12:false});
+}, 1000);
+
+// ---- 位置情報と速度 ----
+let lastLoc = null;
+function fmt(n){ return n.toFixed(5); }
+
+function showLoc(p){
+  const {latitude:la, longitude:lo, accuracy:ac, speed} = p.coords;
+  lastLoc = {la, lo};
+  document.getElementById('gpsStatus').textContent =
+    `GPS: 精度 ±${ac.toFixed(0)}m`;
+  document.getElementById('location').textContent =
+    `緯度: ${fmt(la)} / 経度: ${fmt(lo)} (精度 ±${ac.toFixed(0)}m)`;
+  // 速度計 (m/s → km/h)
+  let v = speed;
+  if (v == null && lastLoc.prev){
+    const d = haversine(la, lo, lastLoc.prev.la, lastLoc.prev.lo);
+    const t = (p.timestamp - lastLoc.prev.t) / 1000;
+    if (t > 0) v = d / t;
+  }
+  lastLoc.prev = {la, lo, t: p.timestamp};
+  document.getElementById('speed').innerHTML =
+    ((v||0)*3.6).toFixed(1) + '<span style="font-size:20px"> km/h</span>';
+  reverseGeocode(la, lo);
+}
+
+function haversine(a,b,c,d){
+  const R=6371000, r=Math.PI/180;
+  const h = Math.sin((c-a)*r/2)**2 +
+            Math.cos(a*r)*Math.cos(c*r)*Math.sin((d-b)*r/2)**2;
+  return 2*R*Math.asin(Math.sqrt(h));
+}
+
+navigator.geolocation.watchPosition(showLoc, e => {
+  document.getElementById('location').textContent =
+    '位置情報エラー: ' + e.message + '(許可してください)';
+}, {enableHighAccuracy:true, maximumAge:1000});
+
+// ---- 逆ジオコーディング(住所) ----
+const addrCache = {};
+async function reverseGeocode(la, lo){
+  const key = fmt(la)+','+fmt(lo);
+  if (addrCache[key]) return render(key);
+  try {
+    const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${la}&lon=${lo}&zoom=18&accept-language=ja`,
+      {headers:{'User-Agent':'LocPhotoApp/1.0'}});
+    const j = await r.json();
+    addrCache[key] = j.display_name || '住所不明';
+    render(key);
+  } catch(e){ addrCache[key] = '住所の取得に失敗'; render(key); }
+}
+function render(key){
+  document.getElementById('location').innerHTML =
+    `緯度: ${key.split(',')[0]} / 経度: ${key.split(',')[1]}<br>住所: ${addrCache[key]}`;
+}
+
+// ---- カメラ撮影 ----
+const video = document.getElementById('video');
+document.getElementById('startCam').onclick = async () => {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+    video.srcObject = stream;
+    video.style.display = 'block';
+    document.getElementById('shot').disabled = false;
+  } catch(e){ alert('カメラにアクセスできません: ' + e.message); }
+};
+
+document.getElementById('shot').onclick = () => {
+  const c = document.createElement('canvas');
+  c.width = video.videoWidth; c.height = video.videoHeight;
+  c.getContext('2d').drawImage(video, 0, 0);
+  document.getElementById('photo').src = c.toDataURL('image/jpeg', 0.9);
+  const now = new Date();
+  document.getElementById('shotTime').textContent =
+    '撮影時刻: ' + now.toLocaleString('ja-JP', {hour12:false});
+  document.getElementById('shotAddr').textContent = lastLoc
+    ? `撮影場所: ${fmt(lastLoc.la)}, ${fmt(lastLoc.lo)} / ${document.getElementById('location').textContent.split('住所: ')[1] || '住所取得中'} / 速度: ${document.getElementById('speed').textContent}`
+    : '位置情報未取得';
+  document.getElementById('photoInfo').style.display = 'block';
+};
+</script>
+</body>
+</html>
